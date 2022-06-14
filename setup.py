@@ -20,7 +20,9 @@ setup(
 
     setup_requires=['setuptools_scm'],
     install_requires=['numpy', 'torch'],
- 
+    scripts=[
+        'vanilla_proteinmpnn/protein_mpnn_run.py',
+    ],
     include_package_data=True,
     classifiers=[
         'License :: OSI Approved :: MIT License',
