@@ -6,18 +6,10 @@
 trigger:
 - master
 
-pool:
-  vmImage: ubuntu-latest
-strategy:
-  matrix:
-    Python37:
-      python.version: '3.7'
-
 resources:
   - repo: self
 
 stages:
-
 - stage: build
   dependsOn: [] # this removes the implicit dependency on previous stage and causes this to run in parallel
   jobs:
