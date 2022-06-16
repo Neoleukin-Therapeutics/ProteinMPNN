@@ -13,28 +13,37 @@ strategy:
     Python37:
       python.version: '3.7'
 
-steps:
-- task: UsePythonVersion@0
-  inputs:
-    versionSpec: '$(python.version)'
-  displayName: 'Use Python $(python.version)'
+- stage: build
+  dependsOn: [] # this removes the implicit dependency on previous stage and causes this to run in parallel
+  jobs:
+  - job:
+    workspace:
+      clean: all # what to clean up before the job runs
+    pool: Custom
+    steps:
+    - task: Docker@2
+      inputs:
+        containerRegistry: '$(CONTAINER_REGISTRY)'
+        repository: 'vanilla_proteinmpnn'
+        command: 'buildAndPush'
+        Dockerfile: 'Dockerfile'
+        tags: |
+          $(Build.SourceBranchName)-$(Build.BuildId)
+          $(Build.SourceBranchName)-$(Build.SourceVersion)
+          $(Build.SourceBranchName)-latest
+          $(Build.SourceBranchName) 
 
-- script: |
-    python -m pip install --upgrade pip
-    pip install -r requirements.txt
-  displayName: 'Install dependencies'
+    - task: TwineAuthenticate@1
+      displayName: 'Twine Authenticate'
+      inputs:
+        artifactFeed: '$(ARTIFACT_FEED)'
 
-- task: TwineAuthenticate@1
-  displayName: 'Twine Authenticate'
-  inputs:
-    artifactFeed: '$(ARTIFACT_FEED)'
-
-- task: Bash@3
-  condition: and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/v'))
-  inputs:
-    targetType: 'inline'
-    script: |
-      cat $(PYPIRC_PATH)
-      docker run -v $(pwd):$(pwd) -v $(PYPIRC_PATH):$(PYPIRC_PATH) --workdir $(pwd) $(CICD_BASE_LOCATION)/vanilla_proteinmpnn:$(Build.SourceBranchName)-$(Build.BuildId) bash -c 'python -m twine upload -r $(ARTIFACT_FEED) --config-file $(PYPIRC_PATH) /var/$(cat /var/wheel_version)'
+    - task: Bash@3
+      condition: and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/v'))
+      inputs:
+        targetType: 'inline'
+        script: |
+          cat $(PYPIRC_PATH)
+          docker run -v $(pwd):$(pwd) -v $(PYPIRC_PATH):$(PYPIRC_PATH) --workdir $(pwd) $(CICD_BASE_LOCATION)/vanilla_proteinmpnn:$(Build.SourceBranchName)-$(Build.BuildId) bash -c 'python -m twine upload -r $(ARTIFACT_FEED) --config-file $(PYPIRC_PATH) /var/$(cat /var/wheel_version)'
 
 
