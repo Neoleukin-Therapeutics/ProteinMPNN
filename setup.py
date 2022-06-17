@@ -1,14 +1,16 @@
 import setuptools
-from codecs import open
-from os import path
+from os import environ
+from dunamai import Version
 
-dir_path = path.abspath(path.dirname(__file__))
+git_version = Version.from_git().serialize(metadata=False)
+VERSION = environ['VERSION'] if 'VERSION' in environ else git_version
 
-with open(path.join(dir_path, 'README.md'), encoding='utf-8') as f:
-    long_description = f.read()
+with open("README.md", "r") as fh:
+    long_description = fh.read()
 
 setuptools.setup(
     name='vanilla_proteinmpnn',
+    version=VERSION,
     packages=setuptools.find_packages(),
     license='MIT',
     description='ProteinMPNN',
