@@ -47,7 +47,7 @@ stages:
         artifactFeed: '$(ARTIFACT_FEED)'
 
     - task: Bash@3
-      condition: and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/v'))
+      condition: and(succeeded(), contains(variables['Build.SourceBranch']))
       inputs:
         targetType: 'inline'
         script: |
