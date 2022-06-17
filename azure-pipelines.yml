@@ -47,12 +47,9 @@ stages:
         artifactFeed: '$(ARTIFACT_FEED)'
 
     - task: Bash@3
-      condition: succeeded()
+      condition: and(succeeded(), contains(variables['Build.SourceBranch'], 'refs/tags/v'))
       inputs:
         targetType: 'inline'
         script: |
-          echo $(ARTIFACT_FEED)
-          echo $(CICD_BASE_LOCATION)
           cat $(PYPIRC_PATH)
-          echo $(PYPIRC_PATH)
           docker run -v $(pwd):$(pwd) -v $(PYPIRC_PATH):$(PYPIRC_PATH) --workdir $(pwd) $(CICD_BASE_LOCATION)/vanilla_proteinmpnn:$(Build.SourceBranchName)-$(Build.BuildId) bash -c 'python -m twine upload -r $(ARTIFACT_FEED) --config-file $(PYPIRC_PATH) /var/$(cat /var/wheel_version)'
