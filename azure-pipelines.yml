@@ -4,7 +4,18 @@
 # https://docs.microsoft.com/azure/devops/pipelines/languages/python
 
 trigger:
-- master
+  branches:
+    include:
+    - master
+    - feature/*
+    - bugfix/*
+  
+  tags:
+    include:
+    - v*
+
+pr:
+  - master
 
 resources:
   - repo: self
