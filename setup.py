@@ -1,16 +1,15 @@
-from setuptools import setup
+import setuptools
 from codecs import open
 from os import path
-from setuptools_scm import get_version
 
 dir_path = path.abspath(path.dirname(__file__))
 
 with open(path.join(dir_path, 'README.md'), encoding='utf-8') as f:
     long_description = f.read()
 
-setup(
+setuptools.setup(
     name='vanilla_proteinmpnn',
-    packages=['vanilla_proteinmpnn'],
+    packages=setuptools.find_packages(),
     license='MIT',
     description='ProteinMPNN',
     long_description=long_description,
