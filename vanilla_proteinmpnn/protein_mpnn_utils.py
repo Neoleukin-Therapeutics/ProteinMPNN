@@ -863,10 +863,12 @@ class ProteinMPNN(nn.Module):
             h_ESV = mask_bw * h_ESV + h_EXV_encoder_fw
             h_V = layer(h_V, h_ESV, mask)
 
+        logits = self.W_out(h_V)
+
         if as_logits_tensor:
             return logits
 
-        logits = self.W_out(h_V) / temperature
+        logits = logits / temperature
         log_probs = F.log_softmax(logits, dim=-1)
         return log_probs
 
@@ -1112,10 +1114,12 @@ class ProteinMPNN(nn.Module):
                 h_ESV = mask_bw * h_ESV + h_EXV_encoder_fw
                 h_V = layer(h_V, h_ESV, mask)
 
+            logits = self.W_out(h_V)
+
             if as_logits_tensor:
                 return logits
 
-            logits = self.W_out(h_V) / temperature
+            logits = logits / temperature
             log_probs = F.log_softmax(logits, dim=-1)
             log_conditional_probs[:,idx,:] = log_probs[:,idx,:]
         return log_conditional_probs
@@ -1149,10 +1153,12 @@ class ProteinMPNN(nn.Module):
         for layer in self.decoder_layers:
             h_V = layer(h_V, h_EXV_encoder_fw, mask)
 
+        logits = self.W_out(h_V)
+
         if as_logits_tensor:
             return logits
 
-        logits = self.W_out(h_V) / temperature
+        logits = logits / temperature
         log_probs = F.log_softmax(logits, dim=-1)
         return log_probs
 
