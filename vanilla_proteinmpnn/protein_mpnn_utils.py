@@ -822,7 +822,7 @@ class ProteinMPNN(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, X, S, mask, chain_M, residue_idx, chain_encoding_all, randn, use_input_decoding_order=False, decoding_order=None):
+    def forward(self, X, S, mask, chain_M, residue_idx, chain_encoding_all, randn, use_input_decoding_order=False, decoding_order=None, temperature=1.0):
         """ Graph-conditioned sequence model """
         device=X.device
         # Prepare node and edge embeddings
@@ -863,7 +863,7 @@ class ProteinMPNN(nn.Module):
             h_ESV = mask_bw * h_ESV + h_EXV_encoder_fw
             h_V = layer(h_V, h_ESV, mask)
 
-        logits = self.W_out(h_V)
+        logits = self.W_out(h_V) / temperature
         log_probs = F.log_softmax(logits, dim=-1)
         return log_probs
 
@@ -1055,7 +1055,7 @@ class ProteinMPNN(nn.Module):
         return output_dict
 
 
-    def conditional_probs(self, X, S, mask, chain_M, residue_idx, chain_encoding_all, randn, backbone_only=False):
+    def conditional_probs(self, X, S, mask, chain_M, residue_idx, chain_encoding_all, randn, backbone_only=False, temperature=1.0):
         """ Graph-conditioned sequence model """
         device=X.device
         # Prepare node and edge embeddings
@@ -1109,13 +1109,13 @@ class ProteinMPNN(nn.Module):
                 h_ESV = mask_bw * h_ESV + h_EXV_encoder_fw
                 h_V = layer(h_V, h_ESV, mask)
 
-            logits = self.W_out(h_V)
+            logits = self.W_out(h_V) / temperature
             log_probs = F.log_softmax(logits, dim=-1)
             log_conditional_probs[:,idx,:] = log_probs[:,idx,:]
         return log_conditional_probs
 
 
-    def unconditional_probs(self, X, mask, residue_idx, chain_encoding_all):
+    def unconditional_probs(self, X, mask, residue_idx, chain_encoding_all, temperature=1.0):
         """ Graph-conditioned sequence model """
         device=X.device
         # Prepare node and edge embeddings
@@ -1143,7 +1143,7 @@ class ProteinMPNN(nn.Module):
         for layer in self.decoder_layers:
             h_V = layer(h_V, h_EXV_encoder_fw, mask)
 
-        logits = self.W_out(h_V)
+        logits = self.W_out(h_V) / temperature
         log_probs = F.log_softmax(logits, dim=-1)
         return log_probs
 
