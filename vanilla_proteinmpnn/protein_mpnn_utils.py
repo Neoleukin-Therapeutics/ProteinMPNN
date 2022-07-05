@@ -822,7 +822,7 @@ class ProteinMPNN(nn.Module):
             if p.dim() > 1:
                 nn.init.xavier_uniform_(p)
 
-    def forward(self, X, S, mask, chain_M, residue_idx, chain_encoding_all, randn, use_input_decoding_order=False, decoding_order=None, temperature=1.0):
+    def forward(self, X, S, mask, chain_M, residue_idx, chain_encoding_all, randn, use_input_decoding_order=False, decoding_order=None, temperature=1.0, as_logits_tensor=False):
         """ Graph-conditioned sequence model """
         device=X.device
         # Prepare node and edge embeddings
@@ -862,6 +862,9 @@ class ProteinMPNN(nn.Module):
             h_ESV = cat_neighbors_nodes(h_V, h_ES, E_idx)
             h_ESV = mask_bw * h_ESV + h_EXV_encoder_fw
             h_V = layer(h_V, h_ESV, mask)
+
+        if as_logits_tensor:
+            return logits
 
         logits = self.W_out(h_V) / temperature
         log_probs = F.log_softmax(logits, dim=-1)
@@ -1055,7 +1058,7 @@ class ProteinMPNN(nn.Module):
         return output_dict
 
 
-    def conditional_probs(self, X, S, mask, chain_M, residue_idx, chain_encoding_all, randn, backbone_only=False, temperature=1.0):
+    def conditional_probs(self, X, S, mask, chain_M, residue_idx, chain_encoding_all, randn, backbone_only=False, temperature=1.0, as_logits_tensor=False):
         """ Graph-conditioned sequence model """
         device=X.device
         # Prepare node and edge embeddings
@@ -1109,13 +1112,16 @@ class ProteinMPNN(nn.Module):
                 h_ESV = mask_bw * h_ESV + h_EXV_encoder_fw
                 h_V = layer(h_V, h_ESV, mask)
 
+            if as_logits_tensor:
+                return logits
+
             logits = self.W_out(h_V) / temperature
             log_probs = F.log_softmax(logits, dim=-1)
             log_conditional_probs[:,idx,:] = log_probs[:,idx,:]
         return log_conditional_probs
 
 
-    def unconditional_probs(self, X, mask, residue_idx, chain_encoding_all, temperature=1.0):
+    def unconditional_probs(self, X, mask, residue_idx, chain_encoding_all, temperature=1.0, as_logits_tensor=False):
         """ Graph-conditioned sequence model """
         device=X.device
         # Prepare node and edge embeddings
@@ -1142,6 +1148,9 @@ class ProteinMPNN(nn.Module):
         h_EXV_encoder_fw = mask_fw * h_EXV_encoder
         for layer in self.decoder_layers:
             h_V = layer(h_V, h_EXV_encoder_fw, mask)
+
+        if as_logits_tensor:
+            return logits
 
         logits = self.W_out(h_V) / temperature
         log_probs = F.log_softmax(logits, dim=-1)
