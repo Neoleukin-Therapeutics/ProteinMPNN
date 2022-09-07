@@ -343,8 +343,8 @@ if __name__ == "__main__":
     argparser.add_argument("--path_to_model_weights", type=str, default="", help="Path to model weights folder;") 
     argparser.add_argument("--model_name", type=str, default="v_48_020", help="ProteinMPNN model name: v_48_002, v_48_010, v_48_020, v_48_030; v_48_010=version with 48 edges 0.10A noise")
  
-    argparser.add_argument("--save_score", type=int, default=0, help="0 for False, 1 for True; save score=-log_prob to npy files")
-    argparser.add_argument("--save_probs", type=int, default=0, help="0 for False, 1 for True; save MPNN predicted probabilites per position")
+    argparser.add_argument("--save_score", type=int, default=1, help="0 for False, 1 for True; save score=-log_prob to npy files")
+    argparser.add_argument("--save_probs", type=int, default=1, help="0 for False, 1 for True; save MPNN predicted probabilites per position")
 
     argparser.add_argument("--score_only", type=int, default=0, help="0 for False, 1 for True; score input backbone-sequence pairs")
 
