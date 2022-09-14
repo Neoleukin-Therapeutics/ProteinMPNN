@@ -969,6 +969,7 @@ class ProteinMPNN(nn.Module):
         multi_E_idx = []
         multi_h_V = []
         multi_h_E = []
+        multi_fixed_decoding_order = []
         multi_mask_bw = []
         multi_all_probs = []
         multi_h_S = []
@@ -978,13 +979,23 @@ class ProteinMPNN(nn.Module):
 
         multi_extra_sites = [
             [24, 109],
-            [156, 157],
+            [155, 156],
         ]
+        extra_site_offsets = np.cumsum([0] + [len(x) for x in multi_extra_sites])
 
-        assert all(len(x) == len(multi_extra_sites[0]) for x in multi_extra_sites)
+        device = multi_X[0].device
 
-        for ix in range(len(multi_X)):
-            device = multi_X[ix].device
+        codesigned_len = (multi_chain_mask[0] == 1).sum() - len(multi_extra_sites[0])
+        N = multi_chain_mask[0].shape[0]
+        assert all(
+            (multi_chain_mask[ix] == 1).sum() - len(multi_extra_sites[ix]) == codesigned_len
+            for ix in range(len(multi_chain_mask))
+        )
+        designed_len = codesigned_len + sum(len(x) for x in multi_extra_sites)
+        designed_decoding_order = torch.argsort(torch.randn((N, designed_len), device=device), dim=1)
+
+        n_pdbs = len(multi_X)
+        for ix in range(n_pdbs):
 
             # Prepare node and edge embeddings
             E, E_idx = self.features(multi_X[ix], multi_mask[ix], multi_residue_idx[ix], multi_chain_encoding_all[ix])
@@ -999,9 +1010,29 @@ class ProteinMPNN(nn.Module):
 
             # Decoder uses masked self-attention
             chain_mask = multi_chain_mask[ix]*multi_chain_M_pos[ix]*multi_mask[ix] #update chain_M to include missing regions
-            randn = torch.randn(multi_chain_mask[ix].shape, device=device)
-            # THIS ISNT SAFE! We need to enforce the masks are consistent across proteins, or else somehow handle mismatches
-            decoding_order = torch.argsort((chain_mask+0.0001)*(torch.abs(randn))) #[numbers will be smaller for places where chain_M = 0.0 and higher for places where chain_M = 1.0]
+            
+            fixed_len = (chain_mask == 0).sum()
+            unfixed_len = (chain_mask == 1).sum()
+            fixed_decoding_order = torch.argsort(torch.randn((N, fixed_len), device=device), dim=1) + unfixed_len
+            
+            def valid_idx(x: int):
+                return (
+                    x < codesigned_len or
+                    (
+                        x >= codesigned_len + extra_site_offsets[ix] and
+                        x < codesigned_len + extra_site_offsets[ix + 1]
+                    )
+                )
+
+            local_designed_decoding_order = torch.tensor(
+                [
+                    [x for x in designed_decoding_order[i].tolist() if valid_idx(x)]
+                    for i in range(N)
+                ],
+                device=device
+            )
+            decoding_order = torch.cat([fixed_decoding_order, local_designed_decoding_order], 1)
+
             mask_size = E_idx.shape[1]
             permutation_matrix_reverse = torch.nn.functional.one_hot(decoding_order, num_classes=mask_size).float()
             order_mask_backward = torch.einsum('ij, biq, bjp->bqp',(1-torch.triu(torch.ones(mask_size,mask_size, device=device))), permutation_matrix_reverse, permutation_matrix_reverse)
@@ -1012,7 +1043,6 @@ class ProteinMPNN(nn.Module):
 
             N_batch, N_nodes = multi_X[ix].size(0), multi_X[ix].size(1)
 
-            all_probs = torch.zeros((N_batch, N_nodes, 21), device=device, dtype=torch.float32)
             h_S = torch.zeros_like(h_V, device=device)
             S = torch.zeros((N_batch, N_nodes), dtype=torch.int64, device=device)
             h_V_stack = [h_V] + [torch.zeros_like(h_V, device=device) for _ in range(len(self.decoder_layers))]
@@ -1025,8 +1055,8 @@ class ProteinMPNN(nn.Module):
             multi_E_idx.append(E_idx)
             multi_h_E.append(h_E)
             multi_h_V.append(h_V)
+            multi_fixed_decoding_order.append(fixed_decoding_order)
             multi_mask_bw.append(mask_bw)
-            multi_all_probs.append(all_probs)
             multi_h_S.append(h_S)
             multi_S.append(S)
             multi_h_V_stack.append(h_V_stack)
@@ -1035,75 +1065,115 @@ class ProteinMPNN(nn.Module):
         constant = torch.tensor(omit_AAs_np, device=device)
         constant_bias = torch.tensor(bias_AAs_np, device=device)
 
-        # Establish pairs of skip sites
-        # Map an integer T to a pair of matched sites across the ix
-        # Matched sites can either correspond or both be skip sites
-        # This will always work out if every ix has an equal number of skip sites
-        nix = len(multi_X)
+        # Perhaps we handle the fixed chains first...?
+        for ix in range(n_pdbs):
+            fixed_decoding_order = multi_fixed_decoding_order[ix]
+            for t_ in range(fixed_decoding_order.shape[1]):
+                t = fixed_decoding_order[:,t_] #[B]
 
-        n_extra = len(multi_extra_sites[0])
-        ix_t_map = torch.arange(decoding_order.shape[1], device=device).unsqueeze(1).repeat(1, len(multi_X))
-        ix_t_paired = torch.ones(decoding_order.shape[1], dtype=torch.bool, device=device)
-        ix_t_paired[:n_extra] = False
-        for ix in range(nix):
-            for site_ix, site in enumerate(multi_extra_sites[ix]):
-                ix_t_map[ix_t_map[:,ix] >= site + n_extra, ix] += 1
-                ix_t_map[site_ix, ix] = site
-        ix_t_map[n_extra:] -= n_extra
+                # First check if `ix` lands in a padding region for this sequence
+                chain_mask_gathered = torch.gather(multi_chain_mask[ix], 1, t[:,None]) #[B]
 
-        # Commence autoregression
-        for t_ in range(N_nodes):
+
+                assert (chain_mask_gathered==0).all()
+                S_t = torch.gather(multi_S_true[ix], 1, t[:,None])
+                
+                S_true_gathered = torch.gather(multi_S_true[ix], 1, t[:,None])
+                S_t = (S_t*chain_mask_gathered+S_true_gathered*(1.0-chain_mask_gathered)).long()
+                temp1 = self.W_s(S_t)
+                multi_h_S[ix].scatter_(1, t[:,None,None].repeat(1,1,temp1.shape[-1]), temp1)
+                multi_S[ix].scatter_(1, t[:,None], S_t)
+
+        t_to_per_pdb_t = {}
+        per_pdb_t = [0] * n_pdbs
+        active_t = 0
+        while all(per_pdb_t[ix] < multi_chain_mask[ix].sum(1) for ix in range(n_pdbs)):
+            not_extra = True
+            for ix in range(n_pdbs):
+                if per_pdb_t[ix] in multi_extra_sites[ix]:
+                    per_pdb_t[ix] += 1
+                    not_extra = False
+            if not_extra:
+                t_to_per_pdb_t[active_t] = [x for x in per_pdb_t]
+                active_t += 1
+                for ix in range(n_pdbs):
+                    per_pdb_t[ix] += 1
+        for ix, extra_sites in enumerate(multi_extra_sites):
+            for site in extra_sites:
+                pdb_t = [-1, -1]
+                pdb_t[ix] = site
+                t_to_per_pdb_t[active_t] = pdb_t
+                active_t += 1
+
+        # Autoregress the designed chain.
+        for t_ in range(designed_decoding_order.shape[1]):
             multi_log_probs = []
-            t_raw = decoding_order[:,t_] #[B]
+            t_raw = designed_decoding_order[:,t_] #[B]
+            ts = torch.tensor([t_to_per_pdb_t[tt] for tt in t_raw.tolist()], device=device)
+            
+            for ix in range(n_pdbs):
+                t = ts[:, ix]
 
-            for ix in range(nix):
-                t = ix_t_map[t_raw, ix]
+                # Some `t` might be -1 in which case we shouldn't draw
+                t = t[t != -1]
+
+                if t.numel() == 0:
+                    multi_log_probs.append(torch.tensor([]))
+                    continue
+
                 # First check if `ix` lands in a padding region for this sequence
                 chain_mask_gathered = torch.gather(multi_chain_mask[ix], 1, t[:,None]) #[B]
                 bias_by_res_gathered = torch.gather(multi_bias_by_res[ix], 1, t[:,None,None].repeat(1,1,21))[:,0,:] #[B, 21]
 
-                if (chain_mask_gathered==0).all():
-                    S_t = torch.gather(multi_S_true[ix], 1, t[:,None]).unsqueeze(0).repeat(nix, 1, 1)
-                else:
-                    # Hidden layers
-                    E_idx_t = torch.gather(multi_E_idx[ix], 1, t[:,None,None].repeat(1,1,multi_E_idx[ix].shape[-1]))
-                    h_E_t = torch.gather(multi_h_E[ix], 1, t[:,None,None,None].repeat(1,1,multi_h_E[ix].shape[-2], multi_h_E[ix].shape[-1]))
+                assert not (chain_mask_gathered==0).any()
+
+                # Hidden layers
+                E_idx_t = torch.gather(multi_E_idx[ix], 1, t[:,None,None].repeat(1,1,multi_E_idx[ix].shape[-1]))
+                h_E_t = torch.gather(multi_h_E[ix], 1, t[:,None,None,None].repeat(1,1,multi_h_E[ix].shape[-2], multi_h_E[ix].shape[-1]))
+                try:
                     h_ES_t = cat_neighbors_nodes(multi_h_S[ix], h_E_t, E_idx_t)
-                    h_EXV_encoder_t = torch.gather(multi_h_EXV_encoder_fw[ix], 1, t[:,None,None,None].repeat(1,1,multi_h_EXV_encoder_fw[ix].shape[-2], multi_h_EXV_encoder_fw[ix].shape[-1]))
-                    mask_t = torch.gather(multi_mask[ix], 1, t[:,None])
-                    for l, layer in enumerate(self.decoder_layers):
-                        # Updated relational features for future states
-                        h_ESV_decoder_t = cat_neighbors_nodes(multi_h_V_stack[ix][l], h_ES_t, E_idx_t)
-                        h_V_t = torch.gather(multi_h_V_stack[ix][l], 1, t[:,None,None].repeat(1,1,multi_h_V_stack[ix][l].shape[-1]))
-                        h_ESV_t = torch.gather(multi_mask_bw[ix], 1, t[:,None,None,None].repeat(1,1,multi_mask_bw[ix].shape[-2], multi_mask_bw[ix].shape[-1])) * h_ESV_decoder_t + h_EXV_encoder_t
-                        multi_h_V_stack[ix][l+1].scatter_(1, t[:,None,None].repeat(1,1,multi_h_V[ix].shape[-1]), layer(h_V_t, h_ESV_t, mask_V=mask_t))
-                    # Sampling step
-                    h_V_t = torch.gather(multi_h_V_stack[ix][-1], 1, t[:,None,None].repeat(1,1,multi_h_V_stack[ix][-1].shape[-1]))[:,0]
-                    logits = self.W_out(h_V_t) / temperature
-                    log_probs = F.log_softmax(logits-constant[None,:]*1e8+constant_bias[None,:]/temperature+bias_by_res_gathered/temperature, dim=-1)
-                    multi_log_probs.append(log_probs)
-                    multi_all_probs[ix].scatter_(1, t[:,None,None].repeat(1,1,21), (chain_mask_gathered[:,:,None,]*log_probs.exp()[:,None,:]).float())
+                except:
+                    breakpoint()
+                h_EXV_encoder_t = torch.gather(multi_h_EXV_encoder_fw[ix], 1, t[:,None,None,None].repeat(1,1,multi_h_EXV_encoder_fw[ix].shape[-2], multi_h_EXV_encoder_fw[ix].shape[-1]))
+                mask_t = torch.gather(multi_mask[ix], 1, t[:,None])
+                for l, layer in enumerate(self.decoder_layers):
+                    # Updated relational features for future states
+                    h_ESV_decoder_t = cat_neighbors_nodes(multi_h_V_stack[ix][l], h_ES_t, E_idx_t)
+                    h_V_t = torch.gather(multi_h_V_stack[ix][l], 1, t[:,None,None].repeat(1,1,multi_h_V_stack[ix][l].shape[-1]))
+                    h_ESV_t = torch.gather(multi_mask_bw[ix], 1, t[:,None,None,None].repeat(1,1,multi_mask_bw[ix].shape[-2], multi_mask_bw[ix].shape[-1])) * h_ESV_decoder_t + h_EXV_encoder_t
+                    multi_h_V_stack[ix][l+1].scatter_(1, t[:,None,None].repeat(1,1,multi_h_V[ix].shape[-1]), layer(h_V_t, h_ESV_t, mask_V=mask_t))
+                # Sampling step
+                h_V_t = torch.gather(multi_h_V_stack[ix][-1], 1, t[:,None,None].repeat(1,1,multi_h_V_stack[ix][-1].shape[-1]))[:,0]
+                logits = self.W_out(h_V_t) / temperature
+                log_probs = F.log_softmax(logits-constant[None,:]*1e8+constant_bias[None,:]/temperature+bias_by_res_gathered/temperature, dim=-1)
+                multi_log_probs.append(log_probs)
+
+            masked_multi_log_probs = []
+            for ix in range(n_pdbs):
+                batch_mask = ts[:, ix] != -1
+                if not batch_mask.any():
+                    continue
+                masked_multi_log_probs.append(multi_log_probs[ix][batch_mask])
 
             # Merge, sample
-            if multi_log_probs:
-                if ix_t_paired[t_raw]:
-                    merged_probs = torch.stack(multi_log_probs, -1).mean(-1).exp()
-                    S_t = torch.multinomial(merged_probs, 1).unsqueeze(0).repeat(nix, 1, 1)
-                else:
-                    S_t = torch.stack([
-                        torch.multinomial(lp.exp(), 1)
-                        for lp in multi_log_probs
-                    ], dim=0)
+            merged_probs = torch.stack(masked_multi_log_probs, -1).mean(-1).exp()
+            S_t = torch.multinomial(merged_probs, 1)
 
-            for ix in range(len(multi_X)):
-                t = ix_t_map[t_raw, ix]
-                S_true_gathered = torch.gather(multi_S_true[ix], 1, t[:,None])
-                S_t[ix] = (S_t[ix]*chain_mask_gathered+S_true_gathered*(1.0-chain_mask_gathered)).long()
-                temp1 = self.W_s(S_t[ix])
-                multi_h_S[ix].scatter_(1, t[:,None,None].repeat(1,1,temp1.shape[-1]), temp1)
-                multi_S[ix].scatter_(1, t[:,None], S_t[ix])
+            for ix in range(n_pdbs):
+                t = ts[:, ix]
+                batch_mask = ts[:, ix] != -1
+                if not batch_mask.any():
+                    continue
+                t = t[batch_mask]
 
-        output_dict = {"S": multi_S, "probs": multi_all_probs, "decoding_order": decoding_order}
+                S_true_gathered = torch.gather(multi_S_true[ix][batch_mask], 1, t[:,None])
+                S_t = (S_t*chain_mask_gathered+S_true_gathered*(1.0-chain_mask_gathered)).long()
+                temp1 = self.W_s(S_t[batch_mask])
+
+                multi_h_S[ix][batch_mask] = multi_h_S[ix][batch_mask].scatter(1, t[:,None,None].repeat(1,1,temp1.shape[-1]), temp1)
+                multi_S[ix][batch_mask] = multi_S[ix][batch_mask].scatter(1, t[:,None], S_t[batch_mask])
+
+        output_dict = {"S": multi_S}
         return output_dict
 
     def tied_sample(self, X, randn, S_true, chain_mask, chain_encoding_all, residue_idx, mask=None, temperature=1.0, omit_AAs_np=None, bias_AAs_np=None, chain_M_pos=None, omit_AA_mask=None, pssm_coef=None, pssm_bias=None, pssm_multi=None, pssm_log_odds_flag=None, pssm_log_odds_mask=None, pssm_bias_flag=None, tied_pos=None, tied_beta=None, bias_by_res=None):
