@@ -211,47 +211,23 @@ def main(args):
             multi_mask = []
             multi_chain_M = []
             multi_chain_encoding_all = []
-            multi_chain_list_list = []
-            multi_visible_list_list = []
-            multi_masked_list_list = []
-            multi_masked_chain_length_list_list = []
             multi_chain_M_pos = []
-            multi_omit_AA_mask = []
             multi_residue_idx = []
-            multi_pssm_coef = []
-            multi_pssm_bias = []
             multi_bias_by_res_all = []
-            multi_pssm_log_odds_mask = []
 
             for protein in proteins:
                 batch_clones = [copy.deepcopy(protein) for i in range(BATCH_COPIES)]
                 X, S, mask, lengths, chain_M, chain_encoding_all, chain_list_list, visible_list_list, masked_list_list, masked_chain_length_list_list, chain_M_pos, omit_AA_mask, residue_idx, dihedral_mask, tied_pos_list_of_lists_list, pssm_coef, pssm_bias, pssm_log_odds_all, bias_by_res_all, tied_beta = tied_featurize(batch_clones, device, chain_id_dict, fixed_positions_dict, omit_AA_dict, tied_positions_dict, pssm_dict, bias_by_res_dict)
-
-                pssm_log_odds_mask = (pssm_log_odds_all > args.pssm_threshold).float() #1.0 for true, 0.0 for false
 
                 multi_X.append(X)
                 multi_S.append(S)
                 multi_mask.append(mask)
                 multi_chain_M.append(chain_M)
                 multi_chain_encoding_all.append(chain_encoding_all)
-                multi_chain_list_list.append(chain_list_list)
-                multi_visible_list_list.append(visible_list_list)
-                multi_masked_list_list.append(masked_list_list)
-                multi_masked_chain_length_list_list.append(masked_chain_length_list_list)
                 multi_chain_M_pos.append(chain_M_pos)
-                multi_omit_AA_mask.append(omit_AA_mask)
                 multi_residue_idx.append(residue_idx)
-                multi_pssm_coef.append(pssm_coef)
-                multi_pssm_bias.append(pssm_bias)
                 multi_bias_by_res_all.append(bias_by_res_all)
-                multi_pssm_log_odds_mask.append(pssm_log_odds_mask)
-            
-            randn_1 = torch.randn(chain_M.shape, device=X.device)
-            log_probs = model(X, S, mask, chain_M*chain_M_pos, residue_idx, chain_encoding_all, randn_1)
-            mask_for_loss = mask*chain_M*chain_M_pos
-            scores = _scores(S, log_probs, mask_for_loss)
-            native_score = scores.cpu().data.numpy()
-            
+                        
             # Generate some sequences
             name_ = "__".join([protein['name'] for protein in proteins])
             ali_file = base_folder + '/seqs/' + name_ + '.fa'
@@ -262,10 +238,21 @@ def main(args):
             with open(ali_file, 'w') as f:
                 for temp in temperatures:
                     for j in range(NUM_BATCHES):
-                        randn_2 = torch.randn(chain_M.shape, device=X.device)
                         # if tied_positions_dict == None:
-                        breakpoint()
-                        sample_dict = model.multi_sample(X, randn_2, S, chain_M, chain_encoding_all, residue_idx, mask=mask, temperature=temp, omit_AAs_np=omit_AAs_np, bias_AAs_np=bias_AAs_np, chain_M_pos=chain_M_pos, omit_AA_mask=omit_AA_mask, bias_by_res=bias_by_res_all)
+
+                        sample_dict = model.multi_sample(
+                            multi_X,
+                            multi_S,
+                            multi_chain_M,
+                            multi_chain_encoding_all,
+                            multi_residue_idx,
+                            multi_mask=multi_mask,
+                            temperature=temp,
+                            omit_AAs_np=omit_AAs_np,
+                            bias_AAs_np=bias_AAs_np,
+                            multi_chain_M_pos=multi_chain_M_pos,
+                            multi_bias_by_res=multi_bias_by_res_all,
+                        )
                         S_sample = sample_dict["S"] 
                         # else:
                         #     sample_dict = model.tied_sample(X, randn_2, S, chain_M, chain_encoding_all, residue_idx, mask=mask, temperature=temp, omit_AAs_np=omit_AAs_np, bias_AAs_np=bias_AAs_np, chain_M_pos=chain_M_pos, omit_AA_mask=omit_AA_mask, pssm_coef=pssm_coef, pssm_bias=pssm_bias, pssm_multi=args.pssm_multi, pssm_log_odds_flag=bool(args.pssm_log_odds_flag), pssm_log_odds_mask=pssm_log_odds_mask, pssm_bias_flag=bool(args.pssm_bias_flag), tied_pos=tied_pos_list_of_lists_list[0], tied_beta=tied_beta, bias_by_res=bias_by_res_all)
@@ -305,13 +292,12 @@ def main(args):
                                 print_masked_chains = [masked_list_list[0][i] for i in sorted_masked_chain_letters]
                                 sorted_visible_chain_letters = np.argsort(visible_list_list[0])
                                 print_visible_chains = [visible_list_list[0][i] for i in sorted_visible_chain_letters]
-                                native_score_print = np.format_float_positional(np.float32(native_score.mean()), unique=False, precision=4)
                                 script_dir = os.path.dirname(os.path.realpath(__file__))
                                 try:
                                     commit_str = subprocess.check_output(f'git --git-dir {script_dir}/../.git rev-parse HEAD', shell=True).decode().strip()
                                 except subprocess.CalledProcessError:
                                     commit_str = 'unknown'
-                                f.write('>{}, score={}, fixed_chains={}, designed_chains={}, model_name={}, git_hash={}\n{}\n'.format(name_, native_score_print, print_visible_chains, print_masked_chains, args.model_name, commit_str, native_seq)) #write the native sequence
+                                f.write('>{}, fixed_chains={}, designed_chains={}, model_name={}, git_hash={}\n{}\n'.format(name_, print_visible_chains, print_masked_chains, args.model_name, commit_str, native_seq)) #write the native sequence
                             start = 0
                             end = 0
                             list_of_AAs = []
@@ -365,6 +351,7 @@ if __name__ == "__main__":
     
     argparser.add_argument("--out_folder", type=str, help="Path to a folder to output sequences, e.g. /home/out/")
     argparser.add_argument("--pdb_paths", nargs='+', type=str, default='', help="Path to a single PDB to be designed")
+    argparser.add_argument("--pdb_path_skip_sites", nargs='+', type=str, default='', help="")
     argparser.add_argument("--pdb_path_chains", type=str, default='', help="Define which chains need to be designed for a single PDB ")
     # argparser.add_argument("--jsonl_path", type=str, help="Path to a folder with parsed pdb into jsonl")
     argparser.add_argument("--chain_id_jsonl",type=str, default='', help="Path to a dictionary specifying which chains need to be designed and which ones are fixed, if not specied all chains will be designed.")
